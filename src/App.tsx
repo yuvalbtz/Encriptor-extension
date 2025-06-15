@@ -1,269 +1,703 @@
 import { useState, useEffect } from 'react'
-import { Box, Button, Container, Typography, Paper, Alert, IconButton, Switch, FormControlLabel } from '@mui/material'
+import { Box, Button, Container, Typography, Alert, Stack, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel } from '@mui/material'
+import { DataGrid } from '@mui/x-data-grid'
+import type { GridColDef, GridRowModel, GridRenderCellParams } from '@mui/x-data-grid'
 import CloudUploadIcon from '@mui/icons-material/CloudUpload'
-import CloseIcon from '@mui/icons-material/Close'
+import AddIcon from '@mui/icons-material/Add'
+import SaveIcon from '@mui/icons-material/Save'
 import * as XLSX from 'xlsx'
+import CryptoJS from 'crypto-js'
 
-interface DecryptionMap {
-  original: string
-  encrypted: string
+interface MappingRow {
+  id: number;
+  encrypted: string;
+  original: string;
 }
 
 function App() {
-  const [decryptionMap, setDecryptionMap] = useState<DecryptionMap[]>([])
-  const [fileName, setFileName] = useState<string>('')
   const [error, setError] = useState<string>('')
   const [success, setSuccess] = useState<string>('')
-  const [isExtensionContext, setIsExtensionContext] = useState<boolean>(false)
-  const [globalDecryptEnabled, setGlobalDecryptEnabled] = useState<boolean>(false)
+  const [mappings, setMappings] = useState<Record<string, string>>({})
+  const [rows, setRows] = useState<MappingRow[]>([])
+  const [openDialog, setOpenDialog] = useState(false)
+  const [newRow, setNewRow] = useState<{ encrypted: string; original: string }>({ encrypted: '', original: '' })
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [exportPassword, setExportPassword] = useState('')
+  const [exportFormat, setExportFormat] = useState<XLSX.BookType>('csv')
+  const [uploadPassword, setUploadPassword] = useState('')
+  const [showUploadPasswordDialog, setShowUploadPasswordDialog] = useState(false)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
 
-  useEffect(() => {
-    // Check if we're in the extension context
-    const checkExtensionContext = () => {
-      const isExtension = typeof chrome !== 'undefined' &&
-        chrome.runtime &&
-        chrome.runtime.id !== undefined
-      setIsExtensionContext(isExtension)
-      return isExtension
+  const columns: GridColDef[] = [
+    { field: 'encrypted', headerName: 'Encrypted', width: 200, editable: true },
+    { field: 'original', headerName: 'Original', width: 200, editable: true },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 100,
+      renderCell: (params: GridRenderCellParams) => (
+        <Button
+          color="error"
+          onClick={() => handleDeleteRow(params.row.id)}
+        >
+          Delete
+        </Button>
+      ),
+    },
+  ]
+
+  // Function to update both rows and mappings
+  const updateMappingsAndRows = (newMappings: Record<string, string>) => {
+    console.log('Updating mappings and rows with:', newMappings);
+    setMappings(newMappings);
+    const newRows = Object.entries(newMappings).map(([encrypted, original], index) => ({
+      id: index,
+      encrypted,
+      original
+    }));
+    console.log('New rows:', newRows);
+    setRows(newRows);
+  };
+
+  const handleSaveNewRow = () => {
+    console.log('Saving new row:', newRow);
+    if (!newRow.encrypted || !newRow.original) {
+      setError('Both encrypted and original values are required');
+      return;
     }
 
-    if (checkExtensionContext()) {
-      // Listen for messages from the background script
-      chrome.runtime.onMessage.addListener((message) => {
-        if (message.type === 'DECRYPTION_STATUS') {
-          if (message.success) {
-            setSuccess(message.message)
-          } else {
-            setError(message.message)
-          }
+    if (mappings[newRow.encrypted]) {
+      setError('This encrypted value already exists');
+      return;
+    }
+
+    // Create new mappings object with the new row
+    const updatedMappings = {
+      ...mappings,
+      [newRow.encrypted]: newRow.original
+    };
+    console.log('Updated mappings:', updatedMappings);
+
+    // Update both rows and mappings
+    updateMappingsAndRows(updatedMappings);
+
+    // Send message to background script to update the page
+    chrome.runtime.sendMessage({ type: 'DECRYPT_PAGE', mappings: updatedMappings })
+      .then((response) => {
+        console.log('Background response:', response);
+        if (response && response.success) {
+          setSuccess('New mapping added and page updated successfully');
+        } else {
+          setError('Failed to update page with new mapping');
         }
       })
-    }
-  }, [])
+      .catch((err) => {
+        console.error('Error updating page with new mapping:', err);
+        setError('Error updating page with new mapping');
+      });
 
-  const handleClose = () => {
-    window.close()
-  }
-
-  const handleGlobalDecryptToggle = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = event.target.checked;
-    setGlobalDecryptEnabled(newValue);
-
-    if (isExtensionContext) {
-      try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        const activeTab = tabs[0];
-
-        if (activeTab.id) {
-          try {
-            // Check if we can inject into this tab
-            const results = await chrome.scripting.executeScript({
-              target: { tabId: activeTab.id },
-              func: () => window.location.protocol,
-            });
-
-            // Skip if we're on a chrome-extension page
-            if (results[0].result === 'chrome-extension:') {
-              setError('Please navigate to a regular webpage to use the decryption feature.');
-              return;
-            }
-
-            // Try to inject the content script first
-            await chrome.scripting.executeScript({
-              target: { tabId: activeTab.id },
-              files: ['content.js']
-            });
-
-            // Then send the message
-            await chrome.tabs.sendMessage(activeTab.id, {
-              type: 'TOGGLE_GLOBAL_DECRYPT',
-              payload: newValue
-            });
-          } catch (error) {
-            console.error('Error sending message to tab:', error);
-            setError('Could not update the page. Please refresh the page and try again.');
-          }
-        }
-      } catch (error) {
-        console.error('Error querying tabs:', error);
-        setError('Could not access the current tab. Please refresh the page and try again.');
-      }
-    }
+    handleCloseDialog();
   };
+
+  const handleDeleteRow = (id: number) => {
+    console.log('Starting row deletion for id:', id);
+
+    const rowToDelete = rows.find(row => row.id === id);
+    if (!rowToDelete) {
+      console.error('Could not find row to delete');
+      return;
+    }
+
+    console.log('Found row to delete:', rowToDelete);
+
+    // Create new mappings object without the deleted row
+    const updatedMappings = { ...mappings };
+    delete updatedMappings[rowToDelete.encrypted];
+
+    console.log('Updated mappings after delete:', updatedMappings);
+
+    // Update rows state
+    const updatedRows = rows.filter(row => row.id !== id);
+    console.log('Updated rows after delete:', updatedRows);
+
+    // Update states in sequence
+    setRows(updatedRows);
+    setTimeout(() => {
+      setMappings(updatedMappings);
+      console.log('Mappings state updated to:', updatedMappings);
+
+      // First un-decrypt the page to remove all highlights
+      const reverseMappings: Record<string, string> = {};
+      Object.entries(updatedMappings).forEach(([encrypted, original]) => {
+        reverseMappings[original] = encrypted;
+      });
+
+      // Send message to un-decrypt first
+      chrome.runtime.sendMessage({
+        type: 'UN_DECRYPT_PAGE',
+        mappings: reverseMappings
+      })
+        .then(() => {
+          // Then re-encrypt with updated mappings
+          return chrome.runtime.sendMessage({
+            type: 'DECRYPT_PAGE',
+            mappings: updatedMappings
+          });
+        })
+        .then((response) => {
+          console.log('Background response:', response);
+          if (response && response.success) {
+            setSuccess('Mapping deleted and page refreshed successfully');
+          } else {
+            setError('Failed to update page after deletion');
+          }
+        })
+        .catch((err) => {
+          console.error('Error updating page after deletion:', err);
+          setError('Error updating page after deletion');
+        });
+    }, 0);
+  };
+
+  chrome.runtime.onConnect.addListener(function (port) {
+    if (port.name === 'mySidepanel') {
+      port.onDisconnect.addListener(async () => {
+        console.log('Sidepanel closed.');
+      });
+    }
+  });
+
+
+  const handleRowEdit = (newRow: GridRowModel) => {
+    console.log('Starting row edit with:', newRow);
+
+    // Find the old row to get the original encrypted value
+    const oldRow = rows.find(row => row.id === newRow.id);
+    if (!oldRow) {
+      console.error('Could not find old row');
+      return newRow;
+    }
+
+    console.log('Found old row:', oldRow);
+
+    // Create new mappings object
+    const updatedMappings = { ...mappings };
+
+    // If the encrypted value changed, we need to remove the old mapping
+    if (oldRow.encrypted !== newRow.encrypted) {
+      console.log('Encrypted value changed from', oldRow.encrypted, 'to', newRow.encrypted);
+      delete updatedMappings[oldRow.encrypted];
+    }
+
+    // Add the new mapping
+    updatedMappings[newRow.encrypted] = newRow.original;
+
+    console.log('Updated mappings:', updatedMappings);
+
+    // Update rows state
+    const updatedRows = rows.map(row =>
+      row.id === newRow.id ? { ...row, ...newRow } : row
+    );
+
+    console.log('Updated rows:', updatedRows);
+
+    // Update states in sequence
+    setRows(updatedRows);
+    setTimeout(() => {
+      setMappings(updatedMappings);
+      console.log('Mappings state updated to:', updatedMappings);
+
+      // Send message to background script to update the page
+      chrome.runtime.sendMessage({ type: 'DECRYPT_PAGE', mappings: updatedMappings })
+        .then((response) => {
+          console.log('Background response:', response);
+          if (response && response.success) {
+            setSuccess('Mapping updated and page refreshed successfully');
+          } else {
+            setError('Failed to update page after edit');
+          }
+        })
+        .catch((err) => {
+          console.error('Error updating page after edit:', err);
+          setError('Error updating page after edit');
+        });
+    }, 0);
+
+    return newRow;
+  };
+
+  // Add useEffect to monitor state changes
+  useEffect(() => {
+    console.log('State changed - Current mappings:', mappings);
+    console.log('State changed - Current rows:', rows);
+  }, [mappings, rows]);
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
+    setError('');
+    setSuccess('');
 
-    setFileName(file.name)
-    setError('')
-    setSuccess('')
+    const file = event.target.files?.[0];
+    if (!file) {
+      setError('No file selected');
+      return;
+    }
 
-    const reader = new FileReader()
+    console.log('File selected:', file.name);
 
-    reader.onload = async (e) => {
-      try {
-        const data = e.target?.result;
-        console.log('Raw file data:', data);
+    // First try to read the file content to check if it's encrypted
+    try {
+      const content = await file.text();
+      console.log('File content preview:', content.substring(0, 100));
 
-        // Read the file with UTF-8 encoding
-        const workbook = XLSX.read(data, {
-          type: 'binary',
-          codepage: 65001 // UTF-8
-        });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
+      // Check if the content looks like encrypted data (base64-like string)
+      const isEncrypted = /^[A-Za-z0-9+/=]+$/.test(content.trim());
+      console.log('Is file encrypted?', isEncrypted);
 
-        // Convert to JSON with proper encoding
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, {
-          raw: false,
-          defval: '',
-          header: ['original', 'encrypted']
-        });
-
-        console.log('Raw JSON data:', jsonData);
-
-        // Helper function to normalize text
-        const normalizeText = (text: string) => {
-          if (!text) return '';
-
-          return String(text)
-            .trim()
-            .replace(/\u200B/g, '')
-            .replace(/\u200C/g, '')
-            .replace(/\u200D/g, '')
-            .replace(/[\uFFFD\uFFFE\uFFFF]/g, '');
-        };
-
-        const map = jsonData
-          .map((row: any) => ({
-            original: normalizeText(row.original || ''),
-            encrypted: normalizeText(row.encrypted || '')
-          }))
-          .filter(item => item.original && item.encrypted);
-
-        console.log('Final processed map:', map);
-
-        if (map.length === 0) {
-          setError('No valid mappings found in the file');
-          return;
-        }
-
-        setDecryptionMap(map);
-        setSuccess(`${map.length} mappings loaded successfully`);
-
-        // Send the decryption map to the background script
-        if (isExtensionContext) {
-          try {
-            await chrome.runtime.sendMessage({
-              type: 'SET_DECRYPTION_MAP',
-              payload: map
-            });
-          } catch (error) {
-            console.error('Error sending message:', error);
-            setError('Error sending decryption map to extension. Please refresh the page and try again.');
-          }
-        }
-      } catch (error) {
-        console.error('Error processing file:', error);
-        setError('Error processing file. Please make sure it\'s a valid CSV or Excel file with UTF-8 encoding.');
+      if (isEncrypted) {
+        console.log('Encrypted file detected, showing password dialog');
+        setPendingFile(file);
+        setShowUploadPasswordDialog(true);
+        return;
       }
-    };
 
-    reader.readAsArrayBuffer(file);
+      console.log('Processing regular file');
+      await processFile(file);
+    } catch (err) {
+      console.error('Error reading file:', err);
+      setError('Error reading file');
+    }
   };
 
-  if (!isExtensionContext) {
-    return (
-      <Container maxWidth="sm">
-        <Box sx={{ my: 4 }}>
-          <Alert severity="error">
-            This application must be run as a Chrome extension.
-          </Alert>
-        </Box>
-      </Container>
-    )
+  const processFile = async (file: File, password?: string) => {
+    try {
+      console.log('Processing file:', file.name, 'with password:', password ? 'provided' : 'none');
+      let content: string;
+      const fileContent = await file.text();
+
+      // If password is provided, try to decrypt
+      if (password) {
+        console.log('Attempting to decrypt file');
+        try {
+          const decrypted = CryptoJS.AES.decrypt(fileContent, password).toString(CryptoJS.enc.Utf8);
+          if (!decrypted) {
+            console.error('Decryption failed - empty result');
+            throw new Error('Decryption failed');
+          }
+          console.log('File decrypted successfully');
+          content = decrypted;
+        } catch (err) {
+          console.error('Decryption error:', err);
+          setError('Failed to decrypt file. Wrong password or corrupted file.');
+          return;
+        }
+      } else {
+        content = fileContent;
+      }
+
+      const newMappings: Record<string, string> = {};
+      const newRows: MappingRow[] = [];
+      let id = 1;
+
+      // Try to detect file type from content
+      const isCSV = content.includes(',') && content.split('\n')[0].split(',').length === 2;
+      const isExcel = content.startsWith('PK') || content.includes('<?xml');
+
+      if (isCSV) {
+        console.log('Processing CSV file');
+        // Process CSV
+        const lines = content.split('\n');
+        for (const line of lines) {
+          const [encrypted, original] = line.split(',').map(s => s.trim());
+          if (encrypted && original) {
+            newMappings[encrypted] = original;
+            newRows.push({ id: id++, encrypted, original });
+          }
+        }
+      } else if (isExcel) {
+        console.log('Processing Excel file');
+        // Process Excel
+        const workbook = XLSX.read(content, { type: 'string' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json<{ encrypted: string; original: string }>(firstSheet);
+
+        for (const row of data) {
+          if (row.encrypted && row.original) {
+            newMappings[row.encrypted] = row.original;
+            newRows.push({ id: id++, encrypted: row.encrypted, original: row.original });
+          }
+        }
+      } else {
+        console.error('Unsupported file format:', file.name);
+        setError('Unsupported file format');
+        return;
+      }
+
+      console.log('File processed successfully. Mappings:', newMappings);
+      setMappings(newMappings);
+      setRows(newRows);
+      setSuccess('File uploaded successfully');
+
+      // Send mappings to background script
+      console.log('Sending mappings to background:', newMappings);
+      chrome.runtime.sendMessage({ type: 'DECRYPT_PAGE', mappings: newMappings })
+        .then((response) => {
+          console.log('Received response from background:', response);
+          if (response && response.success) {
+            setSuccess('File uploaded and page decrypted successfully');
+          } else {
+            setError('Failed to decrypt page');
+          }
+        })
+        .catch((err) => {
+          console.error('Error sending decryption map:', err);
+          setError('Error sending decryption map to extension');
+        });
+
+    } catch (err) {
+      console.error('Error processing file:', err);
+      setError('Error processing file');
+    }
+  };
+
+  const handleUploadPasswordSubmit = async () => {
+    if (!pendingFile || !uploadPassword) {
+      setError('Please enter a password');
+      return;
+    }
+
+    console.log('Submitting password for file:', pendingFile.name);
+    await processFile(pendingFile, uploadPassword);
+    setShowUploadPasswordDialog(false);
+    setUploadPassword('');
+    setPendingFile(null);
+  };
+
+  const handleAddRow = () => {
+    setOpenDialog(true)
   }
 
-  return (
-    <Container maxWidth="sm">
-      <Box sx={{ my: 4, position: 'relative' }}>
-        <IconButton
-          onClick={handleClose}
-          sx={{
-            position: 'absolute',
-            right: 0,
-            top: 0
-          }}
-        >
-          <CloseIcon />
-        </IconButton>
+  const handleCloseDialog = () => {
+    setOpenDialog(false)
+    setNewRow({ encrypted: '', original: '' })
+  }
 
-        <Typography variant="h4" component="h1" gutterBottom align="center">
+  const handleEncrypt = () => {
+    setError('');
+    setSuccess('');
+
+    if (Object.keys(mappings).length === 0) {
+      setError('No mappings available. Please add mappings first.');
+      return;
+    }
+
+    console.log('Encrypting with mappings:', mappings);
+    chrome.runtime.sendMessage({ type: 'DECRYPT_PAGE', mappings })
+      .then((response) => {
+        console.log('Encrypt response:', response);
+        if (response && response.success) {
+          setSuccess('Page encrypted successfully');
+        } else {
+          setError('Failed to encrypt page');
+        }
+      })
+      .catch((err) => {
+        console.error('Error encrypting page:', err);
+        setError('Error encrypting page');
+      });
+  };
+
+  const handleDecrypt = () => {
+    setError('');
+    setSuccess('');
+
+    if (Object.keys(mappings).length === 0) {
+      setError('No mappings available. Please add mappings first.');
+      return;
+    }
+
+    // Create reverse mappings
+    const reverseMappings: Record<string, string> = {};
+    Object.entries(mappings).forEach(([encrypted, original]) => {
+      reverseMappings[original] = encrypted;
+    });
+
+    console.log('Decrypting with reverse mappings:', reverseMappings);
+    chrome.runtime.sendMessage({
+      type: 'UN_DECRYPT_PAGE',
+      mappings: reverseMappings
+    })
+      .then((response) => {
+        console.log('Decrypt response:', response);
+        if (response && response.success) {
+          setSuccess('Page decrypted successfully');
+        } else {
+          setError('Failed to decrypt page');
+        }
+      })
+      .catch((err) => {
+        console.error('Error decrypting page:', err);
+        setError('Error decrypting page');
+      });
+  };
+
+  const handleExport = () => {
+    setExportDialogOpen(true);
+  };
+
+  const handleExportClose = () => {
+    setExportDialogOpen(false);
+    setExportPassword('');
+  };
+
+  const handleExportSubmit = () => {
+    if (!exportPassword) {
+      setError('Please enter a password');
+      return;
+    }
+
+    try {
+      // Convert mappings to array format
+      const data = Object.entries(mappings).map(([encrypted, original]) => ({
+        encrypted,
+        original
+      }));
+
+      if (exportFormat === 'csv') {
+        // Create CSV content
+        const csvContent = data.map(row => `${row.encrypted},${row.original}`).join('\n');
+        const encryptedCsv = CryptoJS.AES.encrypt(csvContent, exportPassword).toString();
+
+        // Create and download file
+        const blob = new Blob([encryptedCsv], { type: 'text/csv' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'encrypted_mappings.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } else {
+        // Create Excel workbook
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.json_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, ws, 'Mappings');
+
+        // Convert to binary string
+        const wbout = XLSX.write(wb, { bookType: exportFormat, type: 'binary' });
+
+        // Convert to Blob
+        const blob = new Blob([s2ab(wbout)], { type: 'application/octet-stream' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `encrypted_mappings.${exportFormat}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+
+      setSuccess('File exported successfully');
+      handleExportClose();
+    } catch (err) {
+      console.error('Error exporting file:', err);
+      setError('Error exporting file');
+    }
+  };
+
+  // Helper function to convert string to ArrayBuffer
+  const s2ab = (s: string) => {
+    const buf = new ArrayBuffer(s.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < s.length; i++) {
+      view[i] = s.charCodeAt(i) & 0xFF;
+    }
+    return buf;
+  };
+
+  return (
+    <Container maxWidth="md" sx={{ width: '100%', p: 2 }}>
+      <Box sx={{ my: 2 }}>
+        <Typography variant="h6" gutterBottom>
           Web Page Decryptor
         </Typography>
-
-        <Paper elevation={3} sx={{ p: 3, mt: 3 }}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-            <input
-              accept=".csv,.xlsx,.xls"
-              style={{ display: 'none' }}
-              id="file-upload"
-              type="file"
-              onChange={handleFileUpload}
-            />
-            <label htmlFor="file-upload">
-              <Button
-                variant="contained"
-                component="span"
-                startIcon={<CloudUploadIcon />}
-              >
-                Upload Mapping File
-              </Button>
-            </label>
-
-            {fileName && (
-              <Typography variant="body2" color="text.secondary">
-                File loaded: {fileName}
-              </Typography>
-            )}
-
-            {decryptionMap.length > 0 && (
-              <Box sx={{ width: '100%', mt: 2 }}>
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={globalDecryptEnabled}
-                      onChange={handleGlobalDecryptToggle}
-                      color="primary"
-                    />
-                  }
-                  label="Show all decrypted text"
-                />
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                  Visibility options:
-                  <ul style={{ textAlign: 'left', marginTop: '8px' }}>
-                    <li>Toggle switch: Show all decrypted text</li>
-                    <li>Hover: See decrypted text in tooltip</li>
-                    <li>Click: Permanently decrypt individual words</li>
-                  </ul>
-                </Typography>
-              </Box>
-            )}
-
-            {error && (
-              <Alert severity="error" sx={{ width: '100%' }}>
-                {error}
-              </Alert>
-            )}
-
-            {success && (
-              <Alert severity="success" sx={{ width: '100%' }}>
-                {success}
-              </Alert>
-            )}
+        <Stack spacing={2}>
+          <input
+            accept=".csv,.xlsx,.xls"
+            style={{ display: 'none' }}
+            id="file-upload"
+            type="file"
+            onChange={handleFileUpload}
+          />
+          <label htmlFor="file-upload">
+            <Button
+              variant="contained"
+              component="span"
+              fullWidth
+              startIcon={<CloudUploadIcon />}
+            >
+              Upload Mapping File
+            </Button>
+          </label>
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <Button
+              variant="contained"
+              color="primary"
+              fullWidth
+              onClick={handleEncrypt}
+            >
+              Encrypt Page
+            </Button>
+            <Button
+              variant="contained"
+              color="secondary"
+              fullWidth
+              onClick={handleDecrypt}
+            >
+              Decrypt Page
+            </Button>
           </Box>
-        </Paper>
+          <Button
+            variant="outlined"
+            color="primary"
+            fullWidth
+            startIcon={<AddIcon />}
+            onClick={handleAddRow}
+          >
+            Add New Mapping
+          </Button>
+          <Button
+            variant="outlined"
+            color="primary"
+            fullWidth
+            startIcon={<SaveIcon />}
+            onClick={handleExport}
+          >
+            Export Mappings
+          </Button>
+        </Stack>
+        <Box sx={{ height: 400, width: '100%', mt: 2 }}>
+          <DataGrid
+            rows={rows}
+            columns={columns}
+            initialState={{
+              pagination: {
+                paginationModel: { pageSize: 5, page: 0 },
+              },
+            }}
+            pageSizeOptions={[5]}
+            checkboxSelection
+            disableRowSelectionOnClick
+            editMode="row"
+            processRowUpdate={(newRow) => {
+              console.log('Processing row update:', newRow);
+              const result = handleRowEdit(newRow);
+              console.log('Row edit completed with result:', result);
+              return result;
+            }}
+            onProcessRowUpdateError={(error) => {
+              console.error('Error updating row:', error);
+              setError('Failed to update row');
+            }}
+            key={rows.length} // Force re-render when rows change
+          />
+        </Box>
+        {error && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        )}
+        {success && (
+          <Alert severity="success" sx={{ mt: 2 }}>
+            {success}
+          </Alert>
+        )}
+
+        {/* Add New Row Dialog */}
+        <Dialog open={openDialog} onClose={handleCloseDialog}>
+          <DialogTitle>Add New Mapping</DialogTitle>
+          <DialogContent>
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              <TextField
+                label="Encrypted Text"
+                value={newRow.encrypted}
+                onChange={(e) => setNewRow({ ...newRow, encrypted: e.target.value })}
+                fullWidth
+                required
+              />
+              <TextField
+                label="Original Text"
+                value={newRow.original}
+                onChange={(e) => setNewRow({ ...newRow, original: e.target.value })}
+                fullWidth
+                required
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseDialog}>Cancel</Button>
+            <Button onClick={handleSaveNewRow} variant="contained" color="primary">
+              Add
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Export Dialog */}
+        <Dialog open={exportDialogOpen} onClose={handleExportClose}>
+          <DialogTitle>Export Mappings</DialogTitle>
+          <DialogContent>
+            <Stack spacing={2} sx={{ mt: 1, minWidth: '300px' }}>
+              <FormControl fullWidth>
+                <InputLabel>Format</InputLabel>
+                <Select
+                  value={exportFormat}
+                  label="Format"
+                  onChange={(e) => setExportFormat(e.target.value as XLSX.BookType)}
+                >
+                  <MenuItem value="csv">CSV</MenuItem>
+                  <MenuItem value="xlsx">XLSX</MenuItem>
+                  <MenuItem value="xls">XLS</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                label="Encryption Password"
+                type="password"
+                value={exportPassword}
+                onChange={(e) => setExportPassword(e.target.value)}
+                fullWidth
+                required
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleExportClose}>Cancel</Button>
+            <Button onClick={handleExportSubmit} variant="contained" color="primary">
+              Export
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Upload Password Dialog */}
+        <Dialog open={showUploadPasswordDialog} onClose={() => setShowUploadPasswordDialog(false)}>
+          <DialogTitle>Enter Decryption Password</DialogTitle>
+          <DialogContent>
+            <TextField
+              label="Password"
+              type="password"
+              value={uploadPassword}
+              onChange={(e) => setUploadPassword(e.target.value)}
+              fullWidth
+              margin="normal"
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setShowUploadPasswordDialog(false)}>Cancel</Button>
+            <Button onClick={handleUploadPasswordSubmit} variant="contained" color="primary">
+              Decrypt
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Box>
     </Container>
   )

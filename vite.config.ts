@@ -1,12 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { fileURLToPath } from 'url'
-import { dirname, resolve } from 'path'
+import { resolve } from 'path'
 import { copyFileSync } from 'fs'
 import sharp from 'sharp'
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -15,7 +11,7 @@ export default defineConfig({
     {
       name: 'copy-assets',
       closeBundle() {
-        // Copy manifest
+        // Copy manifest.json to dist
         copyFileSync(
           resolve(__dirname, 'manifest.json'),
           resolve(__dirname, 'dist/manifest.json')
@@ -24,7 +20,7 @@ export default defineConfig({
         // Generate and copy icons
         const sizes = [16, 48, 128]
         sizes.forEach(size => {
-          sharp(resolve(__dirname, 'src/icon.svg'))
+          sharp(resolve(__dirname, 'public/icon.svg'))
             .resize(size, size)
             .toFile(resolve(__dirname, `dist/icon${size}.png`))
             .catch((err: Error) => console.error(`Error generating icon${size}.png:`, err))
@@ -33,11 +29,12 @@ export default defineConfig({
     }
   ],
   build: {
+    outDir: 'dist',
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),
-        content: resolve(__dirname, 'src/content.js'),
-        background: resolve(__dirname, 'src/background.js')
+        background: resolve(__dirname, 'src/background.ts'),
+        content: resolve(__dirname, 'src/content.tsx')
       },
       output: {
         entryFileNames: '[name].js',
@@ -46,8 +43,12 @@ export default defineConfig({
       }
     },
     target: 'esnext',
-    outDir: 'dist',
     assetsDir: '',
     emptyOutDir: true
-  }
+  },
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
+    },
+  },
 })

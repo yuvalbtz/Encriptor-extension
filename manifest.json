@@ -1,19 +1,21 @@
 {
     "manifest_version": 3,
     "name": "Web Page Decryptor",
-    "version": "1.0.0",
-    "description": "A tool to decrypt web pages using a mapping file",
+    "version": "1.0",
+    "description": "Decrypt web pages using custom mappings",
     "permissions": [
         "activeTab",
         "scripting",
-        "storage",
-        "tabs"
+        "sidePanel"
     ],
     "host_permissions": [
         "<all_urls>"
     ],
     "action": {
         "default_title": "Web Page Decryptor"
+    },
+    "side_panel": {
+        "default_path": "index.html"
     },
     "background": {
         "service_worker": "background.js",
@@ -26,8 +28,7 @@
             ],
             "js": [
                 "content.js"
-            ],
-            "run_at": "document_idle"
+            ]
         }
     ],
     "icons": {
