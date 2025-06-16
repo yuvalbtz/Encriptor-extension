@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react'
-import { Box, Button, Container, Typography, Alert, Stack, Dialog, DialogTitle, DialogContent, DialogActions, TextField, Select, MenuItem, FormControl, InputLabel } from '@mui/material'
-import { DataGrid } from '@mui/x-data-grid'
-import type { GridColDef, GridRowModel, GridRenderCellParams } from '@mui/x-data-grid'
-import CloudUploadIcon from '@mui/icons-material/CloudUpload'
 import AddIcon from '@mui/icons-material/Add'
+import CloudUploadIcon from '@mui/icons-material/CloudUpload'
 import SaveIcon from '@mui/icons-material/Save'
-import * as XLSX from 'xlsx'
+import { Alert, Box, Button, Container, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, InputLabel, MenuItem, Select, Stack, TextField, Typography } from '@mui/material'
+import type { GridColDef, GridRenderCellParams, GridRowModel } from '@mui/x-data-grid'
+import { DataGrid } from '@mui/x-data-grid'
 import CryptoJS from 'crypto-js'
+import { useEffect, useState } from 'react'
+import * as XLSX from 'xlsx'
 
 interface MappingRow {
   id: number;
@@ -159,13 +159,13 @@ function App() {
     }, 0);
   };
 
-  chrome.runtime.onConnect.addListener(function (port) {
-    if (port.name === 'mySidepanel') {
-      port.onDisconnect.addListener(async () => {
-        console.log('Sidepanel closed.');
-      });
-    }
-  });
+  // chrome.runtime.onConnect.addListener(function (port) {
+  //   if (port.name === 'mySidepanel') {
+  //     port.onDisconnect.addListener(async () => {
+  //       console.log('Sidepanel closed.');
+  //     });
+  //   }
+  // });
 
 
   const handleRowEdit = (newRow: GridRowModel) => {
@@ -516,6 +516,14 @@ function App() {
     return buf;
   };
 
+  const handleEncriptWithTooltip = () => {
+    chrome.runtime.sendMessage({ type: 'ENC_WITH_TOOLTIP', mappings })
+  }
+
+
+
+
+
   return (
     <Container maxWidth="md" sx={{ width: '100%', p: 2 }}>
       <Box sx={{ my: 2 }}>
@@ -558,6 +566,7 @@ function App() {
               Decrypt Page
             </Button>
           </Box>
+          <Button variant='contained' color='primary' fullWidth onClick={handleEncriptWithTooltip}>Encript With Tooltip</Button>
           <Button
             variant="outlined"
             color="primary"

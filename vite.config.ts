@@ -14,8 +14,13 @@ export default defineConfig({
         // Copy manifest.json to dist
         copyFileSync(
           resolve(__dirname, 'manifest.json'),
-          resolve(__dirname, 'dist/manifest.json')
-        )
+          resolve(__dirname, 'dist/manifest.json'),
+
+        ),
+          copyFileSync(
+            resolve(__dirname, 'rules.json'),
+            resolve(__dirname, 'dist/rules.json')
+          )
 
         // Generate and copy icons
         const sizes = [16, 48, 128]
@@ -34,7 +39,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         background: resolve(__dirname, 'src/background.ts'),
-        content: resolve(__dirname, 'src/content.tsx')
+        content: resolve(__dirname, 'src/content.tsx'),
       },
       output: {
         entryFileNames: '[name].js',
